@@ -281,6 +281,8 @@ class ModelAdapter(object):
             for node in osd_tree["nodes"]:
                 if node["type"] == CRUSH_HOST_TYPE:
                     host = node["name"]
+                    if host == 'localhost':
+                        continue
                     for osd in find_descendants(node, lambda c: c['type'] == CRUSH_OSD_TYPE):
                         self._crush_osd_hostnames[osd["name"]] = host
 
@@ -357,13 +359,15 @@ class ModelAdapter(object):
                     # First time we've seen this OSD on this host, perhaps we can help
                     # the server out by learning its hostname from CRUSH
                     server.hostname = self.crush_osd_hostnames[name]
-                    if server.hostname is None:
+                    if server.hostname is None or \
+                       server.hostname == 'localhost':
                         # Can't get hostname from CRUSH, fall back to reverse DNS
                         hostname = self._reverse_dns(service_addr)
-                        if hostname is not None:
-                            server.hostname = hostname
-                            server.name = server.hostname
-                            server.save()
+                        if hostname is None:
+                            hostname = 'localhost'
+                        server.hostname = hostname
+                        server.name = server.hostname
+                        server.save()
                     else:
                         server.name = server.hostname
                         server.save()

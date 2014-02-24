@@ -4,6 +4,7 @@ import datetime
 import os
 import logging
 import logging.handlers
+import requests
 import uuid
 import unittest
 from http_client import AuthenticatedHttpClient
@@ -15,10 +16,12 @@ log.setLevel(logging.INFO)
 global base_uri
 global client
 base_uri = None
+server_uri = None
 client = None
 
 def setUpModule():
     global base_uri
+    global server_uri
     global client
     try:
         base_uri = os.environ['CALAMARI_BASE_URI']
@@ -30,6 +33,7 @@ def setUpModule():
     if not base_uri.endswith('api/v1/'):
         base_uri += 'api/v1/'
     client = AuthenticatedHttpClient(base_uri, 'admin', 'admin')
+    server_uri = base_uri.replace('api/v1/', '')
     client.login()
 
 class RestTest(unittest.TestCase):
@@ -40,11 +44,16 @@ class RestTest(unittest.TestCase):
         # really like using the simple class variable self.uri
         # to customize each derived TestCase
         method = getattr(self, 'method', 'GET')
-        self.response = self.get_object(method, self.uri)
+        raw = self.uri.startswith('/')
+        self.response = self.get_object(method, self.uri, raw=raw)
 
-    def get_object(self, method, url):
+    def get_object(self, method, url, raw=False):
+        global server_uri
         'Return Python object decoded from JSON response to method/url'
-        return client.request(method, url).json()
+        if not raw:
+            return client.request(method, url).json()
+        else:
+            return requests.request(method, server_uri + url).json()
 
 class TestUserMe(RestTest):
 
@@ -159,6 +168,8 @@ class TestOSD(RestTest):
 
     def test_osd_pools(self):
         for osd in self.response['osds']:
+            if osd['up'] != 1:
+                continue
             self.assertIsInstance(osd['pools'], list)
             self.assertIsInstance(osd['pools'][0], basestring)
 
@@ -219,6 +230,30 @@ class TestServer(RestTest):
             self.assertIsInstance(server['services'], list)
             for service in server['services']:
                 self.assertIn(service['type'], ('osd', 'mon', 'mds'))
+
+class TestGraphitePoolIOPS(RestTest):
+
+    uri = '/graphite/render?format=json-array&' \
+          'target=ceph.cluster.ceph.pool.0.num_read&' \
+          'target=ceph.cluster.ceph.pool.0.num_write'
+
+    def test_targets_contain_request(self):
+        self.assertIn('targets', self.response)
+        self.assertIn('ceph.cluster.ceph.pool.0.num_read',
+                      self.response['targets'])
+        self.assertIn('ceph.cluster.ceph.pool.0.num_write',
+                      self.response['targets'])
+
+    def test_datapoints(self):
+        self.assertIn('datapoints', self.response)
+        self.assertGreater(len(self.response['datapoints']), 0)
+        data = self.response['datapoints'][0]
+        self.assertEqual(len(data), 3)
+        self.assertIsInstance(data[0], int)
+        if data[1]:
+            self.assertIsInstance(data[1], float)
+        if data[2]:
+            self.assertIsInstance(data[2], float)
 
 #
 # Utility functions
