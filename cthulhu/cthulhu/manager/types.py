@@ -109,6 +109,8 @@ class OsdMap(VersionedSyncObject):
         osds = set()
         for i, step in enumerate(rule['steps']):
             if step['op'] == 'take':
+                if step['item'] == 'default':
+                    step['item'] = -1
                 osds |= _gather_osds(nodes_by_id[step['item']], rule['steps'][i + 1:])
         return osds
 
@@ -180,8 +182,11 @@ class MonStatus(VersionedSyncObject):
             self.mons_by_rank = {}
 
 
-class PgBrief(SyncObject):
-    str = 'pg_brief'
+class PgSummary(SyncObject):
+    """
+    A summary of the state of PGs in the cluster, reported by pool and by OSD.
+    """
+    str = 'pg_summary'
 
 
 class Health(SyncObject):
@@ -201,7 +206,7 @@ CRUSH_RULE = 'crush_rule'
 CLUSTER = 'cluster'
 
 # The objects that ClusterMonitor keeps copies of from the mon
-SYNC_OBJECT_TYPES = [MdsMap, OsdMap, MonMap, MonStatus, PgBrief, Health, Config]
+SYNC_OBJECT_TYPES = [MdsMap, OsdMap, MonMap, MonStatus, PgSummary, Health, Config]
 SYNC_OBJECT_STR_TYPE = dict((t.str, t) for t in SYNC_OBJECT_TYPES)
 
 USER_REQUEST_COMPLETE = 'complete'
