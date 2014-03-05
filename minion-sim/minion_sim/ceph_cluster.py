@@ -5,6 +5,8 @@ import os
 import uuid
 import random
 import datetime
+from xmlrpclib import Binary
+import msgpack
 from minion_sim.log import log
 
 KB = 1024
@@ -1103,6 +1105,50 @@ class CephCluster(CephClusterState):
     def get_services(self, fqdn):
         return self._host_services[fqdn]
 
+    def _pg_summary(self):
+        # FIXME: should load up the ceph.py salt module and get this method from there
+
+        pgs_brief = self._objects['pg_brief']
+
+        osds = {}
+        pools = {}
+        all_pgs = {}
+        for pg in pgs_brief:
+            for osd in pg['acting']:
+                try:
+                    osd_stats = osds[osd]
+                except KeyError:
+                    osd_stats = {}
+                    osds[osd] = osd_stats
+
+                try:
+                    osd_stats[pg['state']] += 1
+                except KeyError:
+                    osd_stats[pg['state']] = 1
+
+            pool = int(pg['pgid'].split('.')[0])
+            try:
+                pool_stats = pools[pool]
+            except KeyError:
+                pool_stats = {}
+                pools[pool] = pool_stats
+
+            try:
+                pool_stats[pg['state']] += 1
+            except KeyError:
+                pool_stats[pg['state']] = 1
+
+            try:
+                all_pgs[pg['state']] += 1
+            except KeyError:
+                all_pgs[pg['state']] = 1
+
+        return {
+            'by_osd': osds,
+            'by_pool': pools,
+            'all': all_pgs
+        }
+
     def get_heartbeat(self, fsid):
         return {
             'name': self.name,
@@ -1115,13 +1161,17 @@ class CephCluster(CephClusterState):
                 'osd_map': self._objects['osd_map']['epoch'],
                 'osd_tree': 1,
                 'pg_map': self._objects['pg_map']['version'],
-                'pg_brief': md5(json.dumps(self._objects['pg_brief'])),
+                'pg_summary': md5(json.dumps(self._pg_summary())),
                 'config': md5(json.dumps(self._objects['config']))
             }
         }
 
     def get_cluster_object(self, cluster_name, sync_type, since):
-        data = self._objects[sync_type]
+        if sync_type == 'pg_summary':
+            data = self._pg_summary()
+        else:
+            data = self._objects[sync_type]
+
         if sync_type == 'osd_map':
             version = data['epoch']
         elif sync_type == 'mon_status':
@@ -1131,12 +1181,12 @@ class CephCluster(CephClusterState):
         else:
             version = 1
 
-        return {
+        return Binary(msgpack.packb({
             'fsid': self.fsid,
             'version': version,
             'type': sync_type,
             'data': data
-        }
+        }))
 
     def _pg_id_to_osds(self, pg_id):
         # TODO: respect the pool's replication policy
