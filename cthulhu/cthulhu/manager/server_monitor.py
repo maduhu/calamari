@@ -109,10 +109,8 @@ class ServerMonitor(greenlet.Greenlet):
     - The ceph.services salt message from managed servers
     - Updates to the OSD map which may tell us about unmanaged servers
     """
-    def __init__(self, persister, eventer):
+    def __init__(self, persister, eventer, requests):
         super(ServerMonitor, self).__init__()
-
-        self._persister = persister
 
         # FQDN to ServerState
         self.servers = {}
@@ -129,6 +127,8 @@ class ServerMonitor(greenlet.Greenlet):
         self._complete = event.Event()
 
         self._eventer = eventer
+        self._persister = persister
+        self._requests = requests
 
     def _run(self):
         log.info("Starting %s" % self.__class__.__name__)

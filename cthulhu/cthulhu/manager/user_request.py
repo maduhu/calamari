@@ -59,7 +59,7 @@ class UserRequestBase(object):
         self.id = uuid.uuid4().__str__()
 
         self._minion_id = None
-        self._fsid = fsid
+        self.fsid = fsid
         self._cluster_name = cluster_name
         self._commands = commands
 
@@ -136,7 +136,7 @@ class UserRequestBase(object):
 
         client = LocalClient(config.get('cthulhu', 'salt_config_path'))
         pub_data = client.run_job(self._minion_id, 'ceph.rados_commands',
-                                  [self._fsid, self._cluster_name, commands])
+                                  [self.fsid, self._cluster_name, commands])
         if not pub_data:
             # FIXME: LocalClient uses 'print' to record the
             # details of what went wrong :-(
@@ -175,7 +175,7 @@ class UserRequestBase(object):
         self.state = self.COMPLETE
         self.completed_at = now()
 
-    def on_map(self, sync_type, sync_objects):
+    def on_map(self, sync_type, sync_object):
         pass
 
 
@@ -216,7 +216,7 @@ class OsdMapModifyingRequest(UserRequestBase):
     @property
     def associations(self):
         return {
-            'fsid': self._fsid
+            'fsid': self.fsid
         }
 
     @property
@@ -235,11 +235,12 @@ class OsdMapModifyingRequest(UserRequestBase):
         self.result = result
         self._await_version = result['versions']['osd_map']
 
-    def on_map(self, sync_type, sync_objects):
+    def on_map(self, sync_type, sync_object):
         if sync_type != OsdMap:
             return
+        else:
+            osd_map = sync_object
 
-        osd_map = sync_objects.get(OsdMap)
         ready = osd_map.version >= self._await_version
         if ready:
             self.log.debug("check passed (%s >= %s)" % (osd_map.version, self._await_version))
@@ -361,15 +362,16 @@ class PgCreatingRequest(OsdMapModifyingRequest):
             self.log.debug(
                 "PgCreatingRequest.complete_jid: successfully issued request for %s" % self._pg_progress.goal)
 
-    def on_map(self, sync_type, sync_objects):
+    def on_map(self, sync_type, sync_object):
         self.log.debug("PgCreatingRequest %s %s" % (sync_type.str, self._phase))
         if self._phase == self.PRE_CREATE:
             return
         elif self._phase == self.CREATING:
             if sync_type == PgSummary:
                 # Count the PGs in this pool which are not in state 'creating'
-                pg_summary = sync_objects.get(PgSummary)
+                pg_summary = sync_object
                 pgs_not_creating = 0
+
                 for state_tuple, count in pg_summary.data['by_pool'][self._pool_id].items():
                     states = state_tuple.split("+")
                     if 'creating' not in states:
@@ -394,4 +396,4 @@ class PgCreatingRequest(OsdMapModifyingRequest):
                         })])
 
         elif self._phase == self.POST_CREATE:
-            super(PgCreatingRequest, self).on_map(sync_type, sync_objects)
+            super(PgCreatingRequest, self).on_map(sync_type, sync_object)

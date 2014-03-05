@@ -2,6 +2,7 @@ import argparse
 import hashlib
 import logging
 import os
+import re
 import gevent.event
 import signal
 from dateutil.tz import tzutc
@@ -18,6 +19,7 @@ from cthulhu.log import log
 import cthulhu.log
 from cthulhu.manager.cluster_monitor import ClusterMonitor
 from cthulhu.manager.eventer import Eventer
+from cthulhu.manager.request_collection import RequestCollection
 from cthulhu.manager.rpc import RpcThread
 from cthulhu.manager.notifier import NotificationThread
 from cthulhu.manager import config, salt_config
@@ -28,9 +30,9 @@ from cthulhu.persistence.sync_objects import SyncObject
 from cthulhu.persistence.persister import Persister, Session
 
 
-class DiscoveryThread(gevent.greenlet.Greenlet):
+class TopLevelEvents(gevent.greenlet.Greenlet):
     def __init__(self, manager):
-        super(DiscoveryThread, self).__init__()
+        super(TopLevelEvents, self).__init__()
 
         self._manager = manager
         self._complete = gevent.event.Event()
@@ -41,26 +43,33 @@ class DiscoveryThread(gevent.greenlet.Greenlet):
     def _run(self):
         log.info("%s running" % self.__class__.__name__)
         event = salt.utils.event.MasterEvent(salt_config['sock_dir'])
-        event.subscribe("ceph/cluster/")
 
         while not self._complete.is_set():
-            data = event.get_event(tag="ceph/cluster/")
-            if data is not None:
+            ev = event.get_event(full=True)
+            if ev is not None and 'tag' in ev:
+                data = ev['data']
+                tag = ev['tag']
                 try:
-                    if 'tag' in data and data['tag'].startswith("ceph/cluster/"):
+                    if tag.startswith("ceph/cluster/"):
                         cluster_data = data['data']
                         if not cluster_data['fsid'] in self._manager.clusters:
                             self._manager.on_discovery(data['id'], cluster_data)
                         else:
                             log.debug("%s: heartbeat from existing cluster %s" % (
                                 self.__class__.__name__, cluster_data['fsid']))
+                    elif re.match("^salt/job/\d+/ret/[^/]+$", tag):
+                        if data['fun'] == 'ceph.rados_commands':
+                            self._manager.requests.on_completion(data)
+                        elif data['fun'] == 'saltutil.running':
+                            self._manager.requests.on_tick_response(data['id'], data['return'])
+                        else:
+                            pass
                     else:
                         # This does not concern us, ignore it
-                        #log.debug("DiscoveryThread ignoring: %s" % data)
+                        log.debug("TopLevelEvents: ignoring %s" % tag)
                         pass
                 except:
-                    log.debug("Message content: %s" % data)
-                    log.exception("Exception handling message")
+                    log.exception("Exception handling message tag=%s" % tag)
 
         log.info("%s complete" % self.__class__.__name__)
 
@@ -77,7 +86,7 @@ class Manager(object):
         self._complete = gevent.event.Event()
 
         self._rpc_thread = RpcThread(self)
-        self._discovery_thread = DiscoveryThread(self)
+        self._discovery_thread = TopLevelEvents(self)
 
         self.notifier = NotificationThread()
         try:
@@ -90,6 +99,9 @@ class Manager(object):
             log.error("Database error: %s" % e)
             raise
 
+        # Remote operations
+        self.requests = RequestCollection(self)
+
         # FSID to ClusterMonitor
         self.clusters = {}
 
@@ -97,7 +109,7 @@ class Manager(object):
         self.eventer = Eventer(self)
 
         # Handle all ceph/server messages
-        self.servers = ServerMonitor(self.persister, self.eventer)
+        self.servers = ServerMonitor(self.persister, self.eventer, self.requests)
 
     def delete_cluster(self, fs_id):
         """
@@ -158,7 +170,8 @@ class Manager(object):
         # I want the most recent version of every sync_object
         fsids = [(row[0], row[1]) for row in session.query(SyncObject.fsid, SyncObject.cluster_name).distinct(SyncObject.fsid)]
         for fsid, name in fsids:
-            cluster_monitor = ClusterMonitor(fsid, name, self.notifier, self.persister, self.servers, self.eventer)
+            cluster_monitor = ClusterMonitor(fsid, name, self.notifier, self.persister, self.servers,
+                                             self.eventer, self.requests)
             self.clusters[fsid] = cluster_monitor
 
             object_types = [row[0] for row in session.query(SyncObject.sync_type).filter_by(fsid=fsid).distinct()]
@@ -225,7 +238,7 @@ class Manager(object):
     def on_discovery(self, minion_id, heartbeat_data):
         log.info("on_discovery: {0}/{1}".format(minion_id, heartbeat_data['fsid']))
         cluster_monitor = ClusterMonitor(heartbeat_data['fsid'], heartbeat_data['name'],
-                                         self.notifier, self.persister, self.servers, self.eventer)
+                                         self.notifier, self.persister, self.servers, self.eventer, self.requests)
         self.clusters[heartbeat_data['fsid']] = cluster_monitor
 
         # Run before passing on the heartbeat, because otherwise the
@@ -236,6 +249,9 @@ class Manager(object):
         # to do anything
         cluster_monitor.ready()
         cluster_monitor.on_heartbeat(minion_id, heartbeat_data)
+
+    def on_tick(self):
+        self.requests.tick()
 
 
 def main():
@@ -267,4 +283,5 @@ def main():
     gevent.signal(signal.SIGINT, shutdown)
 
     while not complete.is_set():
-        complete.wait(timeout=1)
+        m.on_tick()
+        complete.wait(timeout=5)

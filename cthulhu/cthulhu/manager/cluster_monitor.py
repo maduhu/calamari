@@ -3,7 +3,6 @@ import re
 import datetime
 
 from pytz import utc
-import dateutil
 import gevent.greenlet
 import gevent.event
 
@@ -20,7 +19,6 @@ from cthulhu.manager.osd_request_factory import OsdRequestFactory
 from cthulhu.manager.pool_request_factory import PoolRequestFactory
 from cthulhu.manager.plugin_monitor import PluginMonitor
 from cthulhu.manager.types import SYNC_OBJECT_STR_TYPE, SYNC_OBJECT_TYPES, OSD, POOL, OsdMap, MdsMap, MonMap
-from cthulhu.manager.request_collection import RequestCollection
 
 from cthulhu.manager import config, salt_config
 from cthulhu.util import now, Ticker
@@ -163,7 +161,7 @@ class ClusterMonitor(gevent.greenlet.Greenlet):
     another to listen to user requests.
     """
 
-    def __init__(self, fsid, cluster_name, notifier, persister, servers, eventer):
+    def __init__(self, fsid, cluster_name, notifier, persister, servers, eventer, requests):
         super(ClusterMonitor, self).__init__()
 
         self.fsid = fsid
@@ -174,6 +172,7 @@ class ClusterMonitor(gevent.greenlet.Greenlet):
         self._persister = persister
         self._servers = servers
         self._eventer = eventer
+        self._requests = requests
 
         # Which mon we are currently using for running requests,
         # identified by minion ID
@@ -184,7 +183,6 @@ class ClusterMonitor(gevent.greenlet.Greenlet):
         self.done = gevent.event.Event()
 
         self._sync_objects = SyncObjects(self.name)
-        self._requests = RequestCollection(self._sync_objects, eventer)
         self._derived_objects = DerivedObjects()
 
         self._request_factories = {
@@ -267,10 +265,12 @@ class ClusterMonitor(gevent.greenlet.Greenlet):
                         # Instead we enforce a convention that all calamari jobs must include
                         # fsid in their return value.
                         if (not isinstance(data, dict)) or not isinstance(data['return'], dict):
-                            log.warning("Bad job return: %s" % data)
+                            # Something not formatted for ClusterMonitor
+                            log.warning("Ignoring event %s" % tag)
                             continue
 
                         if 'fsid' not in data['return'] or data['return']['fsid'] != self.fsid:
+                            # Something for a different ClusterMonitor
                             log.debug("Ignoring job return, not for my FSID")
                             continue
 
@@ -281,15 +281,8 @@ class ClusterMonitor(gevent.greenlet.Greenlet):
                                 continue
 
                             self.on_sync_object(data['id'], data['return'])
-                        elif data['fun'] == 'ceph.rados_commands':
-                            # A ceph.rados_commands response
-                            self.on_completion(data)
-                        elif data['fun'] == "saltutil.running":
-                            # Update on what jobs are running
-                            # It would be nice to filter these down to those which really are for
-                            # this cluster, but as long as N_clusters and N_jobs are reasonably small
-                            # it's not an efficiency problem.
-                            self._requests.on_tick_response(data['id'], data['return'])
+                        else:
+                            log.warning("Unexpected function '%s' (%s)" % (data['fun'], tag))
                     else:
                         # This does not concern us, ignore it
                         pass
@@ -316,8 +309,8 @@ class ClusterMonitor(gevent.greenlet.Greenlet):
         :return True if this minion was the favorite or has just been
                 promoted.
         """
-        now = datetime.datetime.now(tz=dateutil.tz.tzlocal())
-        self._last_heartbeat[minion_id] = now
+        t_now = now()
+        self._last_heartbeat[minion_id] = t_now
 
         if self._favorite_mon is None:
             log.debug("%s is my new favourite" % minion_id)
@@ -326,7 +319,7 @@ class ClusterMonitor(gevent.greenlet.Greenlet):
         elif minion_id != self._favorite_mon:
             # Consider whether this minion should become my new favourite: has it been
             # too long since my current favourite reported in?
-            time_since = now - self._last_heartbeat[self._favorite_mon]
+            time_since = t_now - self._last_heartbeat[self._favorite_mon]
             if time_since > datetime.timedelta(seconds=FAVORITE_TIMEOUT_S):
                 log.debug("My old favourite, %s, has not sent a heartbeat for %s: %s is my new favourite" % (
                     self._favorite_mon, time_since, minion_id
@@ -334,6 +327,10 @@ class ClusterMonitor(gevent.greenlet.Greenlet):
                 self._set_favorite(minion_id)
 
         return minion_id == self._favorite_mon
+
+    @nosleep
+    def on_version(self, minion_id, sync_type, version):
+        self._sync_objects.on_version(minion_id, sync_type, version)
 
     @nosleep
     def on_heartbeat(self, minion_id, cluster_data):
@@ -408,7 +405,7 @@ class ClusterMonitor(gevent.greenlet.Greenlet):
         sync_type = SYNC_OBJECT_STR_TYPE[data['type']]
         new_object = self.inject_sync_object(minion_id, data['type'], data['version'], sync_object)
         if new_object:
-            self._requests.on_map(sync_type, self._sync_objects)
+            self._requests.on_map(self.fsid, sync_type, new_object)
             self._persister.update_sync_object(
                 self.fsid,
                 self.name,
@@ -417,10 +414,6 @@ class ClusterMonitor(gevent.greenlet.Greenlet):
                 now(), sync_object)
         else:
             log.warn("ClusterMonitor.on_sync_object: stale object received from %s" % minion_id)
-
-    @nosleep
-    def on_completion(self, data):
-        self._requests.on_completion(data)
 
     def _set_favorite(self, minion_id):
         assert minion_id != self._favorite_mon
@@ -434,6 +427,7 @@ class ClusterMonitor(gevent.greenlet.Greenlet):
         """
 
         # nosleep during preparation phase (may touch ClusterMonitor/ServerMonitor state)
+        request = None
         with nosleep_mgr():
             request_factory = self.get_request_factory(obj_type)
 
