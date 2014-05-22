@@ -30,7 +30,7 @@ set_deb_version:
 
 venv:
 	if [ ! -d $(SRC)/venv ] ; then \
-		virtualenv --system-site-packages $(SRC)/venv ; \
+		virtualenv $(SRC)/venv ; \
 	fi
 
 
