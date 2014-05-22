@@ -4,6 +4,7 @@ import hashlib
 import os
 import re
 import socket
+import subprocess
 import time
 
 # Default timeout for communicating with the Ceph REST API.
@@ -202,6 +203,32 @@ def rados_commands(fsid, cluster_name, commands):
         'err_outs': '',
         'versions': cluster_status(cluster_handle, cluster_name)['versions'],
         'fsid': fsid
+    }
+
+
+def ceph_command(cluster_name, command_args):
+    """
+    Run a Ceph CLI operation directly.  This is a fallback to allow
+    manual execution of arbitrary commands in case the user wants to
+    do something that is absent or broken in Calamari proper.
+
+    :param cluster_name: Ceph cluster name, or None to run without --cluster argument
+    :param command_args: Command line, excluding the leading 'ceph' part.
+    """
+
+    if cluster_name:
+        args = ["ceph", "--cluster", cluster_name] + command_args
+    else:
+        args = ["ceph"] + command_args
+
+    p = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    stdout, stderr = p.communicate()
+    status = p.returncode
+
+    return {
+        'out': stdout,
+        'err': stderr,
+        'status': status
     }
 
 
