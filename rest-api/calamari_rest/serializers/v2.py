@@ -114,7 +114,9 @@ class PoolSerializer(ValidatingSerializer):
 
 class OsdSerializer(ValidatingSerializer):
     class Meta:
-        fields = ('uuid', 'up', 'in', 'id', 'reweight', 'server', 'pools', 'valid_commands', 'public_addr', 'cluster_addr')
+        fields = (
+            'uuid', 'up', 'in', 'id', 'reweight', 'server', 'pools', 'valid_commands', 'public_addr', 'cluster_addr',
+            'shortname')
         create_allowed = ()
         create_required = ()
         modify_allowed = ('up', 'in', 'reweight')
@@ -128,6 +130,7 @@ class OsdSerializer(ValidatingSerializer):
     server = serializers.CharField(read_only=True, help_text="FQDN of server this OSD was last running on")
     pools = serializers.Field(help_text="List of pool IDs which use this OSD for storage")
     valid_commands = serializers.CharField(read_only=True, help_text="List of commands that can be applied to this OSD")
+    shortname = serializers.CharField(help_text="The short hostname of the server hosting this OSD")
 
     public_addr = serializers.CharField(read_only=True, help_text="Public/frontend IP address")
     cluster_addr = serializers.CharField(read_only=True, help_text="Cluster/backend IP address")

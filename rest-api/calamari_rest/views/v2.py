@@ -508,6 +508,7 @@ Filtering is available on this resource:
 
         for o, (service_id, fqdn) in zip(osds, server_info):
             o['server'] = fqdn
+            o['shortname'] = fqdn.split(".")[0]
 
         for o in osds:
             o['pools'] = osd_to_pools[o['osd']]
@@ -523,6 +524,7 @@ Filtering is available on this resource:
         crush_node = self.client.get_sync_object(fsid, 'osd_map', ['osd_tree_node_by_id', int(osd_id)])
         osd['reweight'] = float(crush_node['reweight'])
         osd['server'] = self.client.server_by_service([ServiceId(fsid, OSD, osd_id)])[0][1]
+        osd['shortname'] = osd['server'].split(".")[0]
 
         pools = self.client.get_sync_object(fsid, 'osd_map', ['osd_pools', int(osd_id)])
         osd['pools'] = pools
