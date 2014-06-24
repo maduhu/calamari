@@ -57,6 +57,12 @@ class AdminSocketError(CephError):
     """
     pass
 
+class SocketPathError(CephError):
+    """
+    Something wrong with the socket path.
+    """
+    pass
+
 
 def rados_command(cluster_handle, prefix, args=None, decode=True):
     """
@@ -428,6 +434,9 @@ def get_heartbeats():
             # Failed to get info for this service, stale socket or unresponsive,
             # exclude it from report
             pass
+        except SocketPathError:
+            # Failed to parse the socket path
+            pass
         else:
             service_name = "%s-%s.%s" % (service_data['cluster'], service_data['type'], service_data['id'])
 
@@ -469,7 +478,10 @@ def service_status(socket_path):
     """
     Given an admin socket path, learn all we can about that service
     """
-    cluster_name, service_type, service_id = re.match("^(.*)-(.*)\.(.*).asok$", os.path.basename(socket_path)).groups()
+    try:
+        cluster_name, service_type, service_id = re.match("^(.*)-(.*)\.(.*).asok$", os.path.basename(socket_path)).groups()
+    except:
+        raise SocketPathError("The socket path is error!")
     # Interrogate the service for its FSID
     config = json.loads(admin_socket(socket_path, ['config', 'get', 'fsid'], 'json'))
     fsid = config['fsid']
